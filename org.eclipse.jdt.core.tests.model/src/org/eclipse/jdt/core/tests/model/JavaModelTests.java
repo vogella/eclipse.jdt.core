@@ -361,6 +361,29 @@ public void testCreatePkgHandleInDifferentProject() throws CoreException {
 }
 
 /*
+ * Ensure that using JavaCore.create(IResource) for a non-Java-like resource located directly at
+ * the root of a classpath entry (i.e. in the default package) defined in a different project
+ * returns the default package fragment, without needing to validate a package name.
+ * (regression test locking the lazy compiler-option lookup in determineIfOnClasspath)
+ */
+public void testCreateDefaultPkgHandleInDifferentProject() throws CoreException {
+	try {
+		createJavaProject("P1", new String[] {}, "bin");
+		createFolder("/P1/lib");
+		IFile file = createFile("/P1/lib/readme.txt", "");
+		IJavaProject p2 = createJavaProject("P2", new String[] {}, new String[] {"/P1/lib"}, "");
+		IJavaElement element = JavaModelManager.determineIfOnClasspath(file, p2);
+		assertElementEquals(
+			"Unexpected element",
+			"<default> [in /P1/lib [in P2]]",
+			element
+		);
+	} finally {
+		deleteProjects(new String[] {"P1", "P2"});
+	}
+}
+
+/*
  * Ensures that the right line separator is found for a compilation unit.
  */
 public void testFindLineSeparator01() throws CoreException {
