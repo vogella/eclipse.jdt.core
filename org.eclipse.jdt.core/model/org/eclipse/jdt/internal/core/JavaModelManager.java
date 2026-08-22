@@ -1023,8 +1023,9 @@ public class JavaModelManager implements ISaveParticipant, IContentTypeChangeLis
 				} catch (JavaModelException e) {
 					return null;
 				}
+				IPath lookupPath = lookupPath(folder);
 				for (IJavaProject p : projects) {
-					if (!p.equals(lastProject)) {
+					if (!p.equals(lastProject) && mayBeOnClasspath(p, lookupPath)) {
 						element = determineIfOnClasspath(folder, p);
 						if (element != null) {
 							lastProjectNameUsed = p.getElementName();
@@ -1115,6 +1116,32 @@ public class JavaModelManager implements ISaveParticipant, IContentTypeChangeLis
 			// project doesn't exist: return null
 		}
 		return null;
+	}
+
+	/**
+	 * Returns the path {@link #determineIfOnClasspath} matches classpath entries against, or
+	 * <code>null</code> if it cannot be determined.
+	 */
+	private static IPath lookupPath(IResource resource) {
+		IPath resourcePath = resource.getFullPath();
+		return ExternalFoldersManager.isInternalPathForExternalFolder(resourcePath) ? resource.getLocation()
+				: resourcePath;
+	}
+
+	/**
+	 * Returns false only if the project has a resolved classpath that provably cannot contain the
+	 * given path, in which case {@link #determineIfOnClasspath} does not have to be asked. An entry
+	 * can only match a path that starts with the same segment, so a project whose entries all stay
+	 * inside itself never matches a path from elsewhere.
+	 */
+	private static boolean mayBeOnClasspath(IJavaProject project, IPath lookupPath) {
+		if (lookupPath == null || lookupPath.segmentCount() == 0)
+			return true;
+		PerProjectInfo info = getJavaModelManager().getPerProjectInfo(project.getProject(), false/*don't create*/);
+		if (info == null)
+			return true;
+		Set<String> foreignRootSegments = info.foreignRootSegments;
+		return foreignRootSegments == null || foreignRootSegments.contains(lookupPath.segment(0));
 	}
 
 	/**
@@ -1314,6 +1341,11 @@ public class JavaModelManager implements ISaveParticipant, IContentTypeChangeLis
 		public volatile int rawTimeStamp;
 		public volatile boolean writtingRawClasspath;
 		public volatile IClasspathEntry[] resolvedClasspath;
+		/**
+		 * First segments of the resolved classpath entry paths that do not point into this
+		 * project, or <code>null</code> while the classpath is unresolved.
+		 */
+		public volatile Set<String> foreignRootSegments;
 		public volatile IJavaModelStatus unresolvedEntryStatus;
 		public volatile Map<IPath, IClasspathEntry> rootPathToRawEntries; // reverse map from a package fragment root's path to the raw entry
 		private Map<IPath, IClasspathEntry> rootPathToResolvedEntries; // map from a package fragment root's path to the resolved entry
@@ -1413,6 +1445,7 @@ public class JavaModelManager implements ISaveParticipant, IContentTypeChangeLis
 				this.outputLocation = newOutputLocation;
 				this.rawClasspathStatus = newRawClasspathStatus;
 				this.resolvedClasspath = newResolvedClasspath;
+				this.foreignRootSegments = computeForeignRootSegments(newResolvedClasspath);
 				this.rootPathToRawEntries = newRootPathToRawEntries;
 				this.rootPathToResolvedEntries = newRootPathToResolvedEntries;
 				this.unresolvedEntryStatus = newUnresolvedEntryStatus;
@@ -1420,6 +1453,30 @@ public class JavaModelManager implements ISaveParticipant, IContentTypeChangeLis
 			}
 
 			return classpathChange;
+		}
+
+		/**
+		 * Collects the leading segment of every classpath entry path that leaves this project.
+		 * A folder can only sit on such an entry if it shares that leading segment, so the
+		 * result tells {@link JavaModelManager#create(IFolder, IJavaProject)} which projects it
+		 * can skip without asking them.
+		 */
+		private Set<String> computeForeignRootSegments(IClasspathEntry[] entries) {
+			if (entries == null)
+				return null;
+			String projectName = this.project.getName();
+			Set<String> segments = null;
+			for (IClasspathEntry entry : entries) {
+				if (entry.getEntryKind() == IClasspathEntry.CPE_PROJECT)
+					continue; // skipped by determineIfOnClasspath as well
+				IPath path = entry.getPath();
+				if (path.segmentCount() == 0 || projectName.equals(path.segment(0)))
+					continue;
+				if (segments == null)
+					segments = new HashSet<>(4);
+				segments.add(path.segment(0));
+			}
+			return segments == null ? Set.of() : Set.copyOf(segments);
 		}
 
 		protected ClasspathChange addClasspathChange() {
